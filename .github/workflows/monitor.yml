@@ -1,0 +1,81 @@
+name: Insider monitor
+
+on:
+  schedule:
+    # Every 10 minutes, offset from the top of the hour (GitHub delays :00 runs most).
+    # Times are UTC. Covers ~6am-10pm US Eastern on weekdays in both EST and EDT:
+    #   10:00-23:59 UTC Mon-Fri  +  00:00-03:59 UTC Tue-Sat (the evening in ET).
+    # PRIVATE repo on the free plan (~2,000 Actions min/month)? Use every 15 min instead:
+    #   minutes -> '3,18,33,48'
+    - cron: '3,13,23,33,43,53 10-23 * * 1-5'
+    - cron: '3,13,23,33,43,53 0-3 * * 2-6'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run: print alerts in the log, send nothing, save nothing'
+        type: boolean
+        default: false
+
+# never let two runs overlap (they share one state file)
+concurrency:
+  group: insider-monitor
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # only used to save state.json to the 'monitor-state' branch
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SEC_NAME: ${{ secrets.SEC_NAME }}
+      SEC_EMAIL: ${{ secrets.SEC_EMAIL }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      # optional tuning: set as repository *variables* (Settings > Variables); blank = default
+      WINDOW_DAYS: ${{ vars.WINDOW_DAYS }}
+      MIN_INSIDERS: ${{ vars.MIN_INSIDERS }}
+      MIN_CLUSTER_VALUE: ${{ vars.MIN_CLUSTER_VALUE }}
+      MIN_PRICE: ${{ vars.MIN_PRICE }}
+      LARGE_BUY_USD: ${{ vars.LARGE_BUY_USD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Restore state
+        run: |
+          mkdir -p state
+          if git ls-remote --exit-code --heads origin monitor-state >/dev/null 2>&1; then
+            git fetch -q --depth=1 origin monitor-state
+            git show FETCH_HEAD:state.json > state/state.json
+            echo "restored state"
+          else
+            echo "no saved state yet (first run)"
+          fi
+
+      - name: Run monitor
+        run: python -m insider_monitor ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
+
+      # Keeps ONE commit on the monitor-state branch (force-pushed), so history never grows.
+      - name: Save state
+        if: ${{ always() && github.event.inputs.dry_run != 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          [ -f state/state.json ] || exit 0
+          d=$(mktemp -d)
+          cp state/state.json "$d/state.json"
+          cd "$d"
+          git init -q -b monitor-state
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state.json
+          git commit -q -m "state $(date -u +%FT%TZ)"
+          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" monitor-state
