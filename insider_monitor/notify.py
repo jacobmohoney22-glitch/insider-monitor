@@ -26,14 +26,14 @@ def _line(p: Purchase) -> str:
 
 
 def format_cluster(c: Cluster) -> str:
-    head = f"<b>Insider cluster buy: {_esc(c.ticker)}</b> ({_esc(c.issuer_name)})"
+    head = f"🚨 <b>INSIDER CLUSTER BUY: {_esc(c.ticker)}</b> ({_esc(c.issuer_name)})"
     sub = (f"{c.insider_count} insiders bought {_money(c.total_value)} "
            f"between {c.first_date} and {c.last_date}")
     return "\n".join([head, sub, ""] + [_line(p) for p in c.purchases])
 
 
 def format_large(p: Purchase) -> str:
-    return (f"<b>Large insider purchase: {_esc(p.ticker)}</b> ({_esc(p.issuer_name)})\n"
+    return (f"🚨 <b>INSIDER LARGE BUY: {_esc(p.ticker)}</b> ({_esc(p.issuer_name)})\n"
             + _line(p))
 
 
