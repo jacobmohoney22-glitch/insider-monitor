@@ -173,3 +173,95 @@ def test_prune_drops_old_entries():
 def test_split_message_respects_telegram_limit():
     text = "\n".join(f"line {i} " + "x" * 80 for i in range(200))
     assert all(len(c) <= 4096 for c in split_message(text))
+
+
+# ---------- SEC feed outages (the real failure: "Read timed out" on the latest-filings request) ----------
+import requests
+from insider_monitor.edgar import EdgarClient
+
+
+class DownClient(FakeClient):
+    """The SEC feed is unreachable, exactly as in the failed GitHub runs."""
+    def feed_page(self, start=0, count=100):
+        raise requests.exceptions.ConnectionError("Read timed out. (read timeout=20)")
+
+
+class FlakySecondPage(FakeClient):
+    def feed_page(self, start=0, count=100):
+        if start > 0:
+            raise requests.exceptions.ReadTimeout("slow")
+        return super().feed_page(start, count)
+
+
+GOOD = [("0001-26-000001", dict(owners=(("Jane Doe", "10"),), tx=(("P", "A", 100, 20.0, "2026-11-04"),)))]
+
+
+def test_sec_outage_is_a_skipped_run_not_a_crash(tmp_path):
+    c, n = cfg(tmp_path), FakeNotifier()
+    s = run_once(c, DownClient([], {}), n, now=NOW)            # must NOT raise (a raise = red X run)
+    assert s["feed_error"] == "ConnectionError" and s["feed_failures"] == 1 and n.sent == []
+    assert State.load(c.state_path).is_new                      # no baseline was recorded from nothing
+
+
+def test_outage_before_first_baseline_does_not_poison_it(tmp_path):
+    c, n = cfg(tmp_path), FakeNotifier()
+    run_once(c, DownClient([], {}), n, now=NOW)
+    s = run_once(c, make_world(GOOD), n, now=NOW)               # SEC recovers: baseline happens normally
+    assert s["first_run"] and "started" in n.sent[0] and s["feed_error"] is None
+
+
+def test_one_warning_after_threshold_then_one_recovery(tmp_path):
+    c, n = cfg(tmp_path, feed_alert_after=3), FakeNotifier()
+    run_once(c, make_world(GOOD), n, now=NOW)                    # baseline -> 1 message
+    for _ in range(6):
+        run_once(c, DownClient([], {}), n, now=NOW)
+    warnings = [m for m in n.sent if "unreachable" in m]
+    assert len(warnings) == 1 and "3 runs in a row" in warnings[0]       # once, at the 3rd failure
+    run_once(c, make_world(GOOD), n, now=NOW)
+    assert sum("feed is back after 6 missed runs" in m for m in n.sent) == 1
+    st = State.load(c.state_path)
+    assert (st.feed_failures, st.feed_alerted) == (0, False)
+
+
+def test_short_blips_cause_no_messages_at_all(tmp_path):
+    c, n = cfg(tmp_path, feed_alert_after=12), FakeNotifier()
+    run_once(c, make_world(GOOD), n, now=NOW)
+    for _ in range(4):
+        run_once(c, DownClient([], {}), n, now=NOW)
+    run_once(c, make_world(GOOD), n, now=NOW)
+    assert len(n.sent) == 1                                      # only the baseline message
+
+
+def test_failed_warning_send_is_retried(tmp_path):
+    c = cfg(tmp_path, feed_alert_after=2)
+    run_once(c, make_world(GOOD), FakeNotifier(), now=NOW)
+    bad = FakeNotifier(ok=False)
+    for _ in range(3):
+        run_once(c, DownClient([], {}), bad, now=NOW)
+    assert sum("unreachable" in m for m in bad.sent) == 2        # tried at failure 2 and again at 3
+    good = FakeNotifier()
+    run_once(c, DownClient([], {}), good, now=NOW)
+    assert sum("unreachable" in m for m in good.sent) == 1
+
+
+def test_partial_feed_failure_still_processes_what_it_got(tmp_path):
+    c, n = cfg(tmp_path), FakeNotifier()
+    world = make_world(GOOD)
+    client = FlakySecondPage(world.entries, world.xml_by_acc)    # page 1 fine, page 2 times out
+    s = run_once(c, client, n, now=NOW)
+    assert s["feed_error"] == "ReadTimeout" and s["new_filings"] == 1
+    assert State.load(c.state_path).feed_failures == 0           # page 1 worked, so not an outage
+
+
+def test_edgar_client_uses_longer_bounded_timeouts():
+    client = EdgarClient("ua (a@b.c)", min_interval=0)
+    seen = {}
+
+    class R:
+        status_code = 200
+        def raise_for_status(self): pass
+
+    client.session.get = lambda url, **kw: (seen.update(kw), R())[1]
+    client._get("https://www.sec.gov/x")
+    assert seen["timeout"] == (10, 30)
+    assert client.session.get_adapter("https://www.sec.gov").max_retries.total == 2

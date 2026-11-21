@@ -22,6 +22,7 @@ class Config:
     # scan limits
     max_pages: int = 3               # feed pages (100 filings each) per run
     max_filings_per_run: int = 200
+    feed_alert_after: int = 12       # consecutive SEC-feed failures before ONE warning message
     # delivery / storage
     telegram_token: str = ""
     telegram_chat_id: str = ""
@@ -41,6 +42,7 @@ class Config:
             large_buy_usd=float(g("LARGE_BUY_USD", 250_000)),
             max_pages=int(g("MAX_PAGES", 3)),
             max_filings_per_run=int(g("MAX_FILINGS_PER_RUN", 200)),
+            feed_alert_after=int(g("FEED_ALERT_AFTER", 12)),
             telegram_token=g("TELEGRAM_BOT_TOKEN", ""),
             telegram_chat_id=g("TELEGRAM_CHAT_ID", ""),
             state_path=g("STATE_PATH", "state/state.json"),

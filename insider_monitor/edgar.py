@@ -70,7 +70,7 @@ class EdgarClient:
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": user_agent,
                                      "Accept-Encoding": "gzip, deflate"})
-        retries = Retry(total=3, backoff_factor=1.5,
+        retries = Retry(total=2, backoff_factor=2.0,
                         status_forcelist=(429, 500, 502, 503, 504),
                         allowed_methods=("GET",))
         self.session.mount("https://", HTTPAdapter(max_retries=retries))
@@ -80,7 +80,7 @@ class EdgarClient:
         if wait > 0:
             time.sleep(wait)
         self._last = time.time()
-        resp = self.session.get(url, timeout=20)
+        resp = self.session.get(url, timeout=(10, 30))   # (connect, read) seconds
         resp.raise_for_status()
         return resp
 

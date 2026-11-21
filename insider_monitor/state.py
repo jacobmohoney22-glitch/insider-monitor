@@ -18,6 +18,8 @@ class State:
     def __init__(self, data: dict | None = None):
         d = data or {}
         self.started: str | None = d.get("started")
+        self.feed_failures: int = int(d.get("feed_failures", 0))   # consecutive SEC-feed failures
+        self.feed_alerted: bool = bool(d.get("feed_alerted", False))
         self.seen: dict[str, str] = dict(d.get("seen", {}))          # accession -> iso ts
         self.alerted: dict[str, str] = dict(d.get("alerted", {}))    # alert key -> iso ts
         self.purchases: dict[str, dict] = dict(d.get("purchases", {}))  # uid -> purchase
@@ -44,7 +46,8 @@ class State:
         fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", suffix=".tmp")
         with os.fdopen(fd, "w") as f:
             json.dump({"started": self.started, "seen": self.seen,
-                       "alerted": self.alerted, "purchases": self.purchases},
+                       "alerted": self.alerted, "purchases": self.purchases,
+                       "feed_failures": self.feed_failures, "feed_alerted": self.feed_alerted},
                       f, indent=1, sort_keys=True)
         os.replace(tmp, path)   # atomic: never leaves a half-written file
 

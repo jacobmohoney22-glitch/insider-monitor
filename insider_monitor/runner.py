@@ -19,18 +19,43 @@ def run_once(cfg: Config, client, notifier, now: datetime | None = None,
     state = State.load(cfg.state_path)
     first_run = state.is_new
     summary = {"first_run": first_run, "new_filings": 0, "new_purchases": 0,
-               "cluster_alerts": 0, "large_alerts": 0, "fetch_errors": 0}
+               "cluster_alerts": 0, "large_alerts": 0, "fetch_errors": 0, "feed_error": None}
 
     # 1. collect filings we haven't processed (feed is newest-first)
-    fresh, queued = [], set()
+    fresh, queued, pages_ok = [], set(), 0
     for page in range(cfg.max_pages):
-        entries = client.feed_page(start=page * PAGE_SIZE, count=PAGE_SIZE)
+        try:
+            entries = client.feed_page(start=page * PAGE_SIZE, count=PAGE_SIZE)
+        except requests.RequestException as e:
+            summary["feed_error"] = type(e).__name__      # SEC slow/unreachable: not our bug
+            break
+        pages_ok += 1
         new = [e for e in entries if e.accession not in state.seen and e.accession not in queued]
         if not new:
             break          # reached filings we've already handled
         for e in new:
             queued.add(e.accession)
         fresh.extend(new)
+
+    if pages_ok == 0:
+        # Nothing was reachable this run. Skip it quietly (no red X); the next run re-reads the
+        # same newest-300 window, so nothing is lost. Warn ONCE if it keeps happening.
+        state.feed_failures += 1
+        if state.feed_failures >= cfg.feed_alert_after and not state.feed_alerted:
+            if notifier.send(f"\u26a0\ufe0f INSIDER MONITOR \u00b7 The SEC filing feed has been unreachable "
+                             f"for {state.feed_failures} runs in a row. Alerts are delayed, not lost: "
+                             f"it catches up automatically when the SEC responds."):
+                state.feed_alerted = True
+        summary["feed_failures"] = state.feed_failures
+        if persist:
+            state.save(cfg.state_path)
+        return summary
+
+    if state.feed_failures:                                # the feed is back
+        if state.feed_alerted:
+            notifier.send(f"\u2705 INSIDER MONITOR \u00b7 The SEC feed is back after "
+                          f"{state.feed_failures} missed runs. Catching up now.")
+        state.feed_failures, state.feed_alerted = 0, False
     fresh = fresh[:cfg.max_filings_per_run]
 
     # 2. parse each new filing
